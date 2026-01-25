@@ -9,6 +9,7 @@ import bcrypt
 from datetime import datetime, UTC
 from logger import LoggerFactory
 from config import Config
+from llm_service import get_ai_movie_response
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -72,6 +73,21 @@ def login():
     return jsonify({
         "access_token": access_token
     }), 200
+
+
+# AI Movie Analyze API
+@app.route("/movie-ai-response", methods=["POST"])
+def movie_description():
+    logger.info("API '/movie-ai-response' called ...!!!")
+    data = request.get_json()
+
+    movie_name = data.get("movie_name")
+    release_date = data.get("release_date")
+
+    if not movie_name or not release_date:
+        return jsonify({"error": "movie_name and release_date are required"}), 400
+
+    return get_ai_movie_response(movie_name=movie_name, release_date=release_date)
 
 
 @app.route("/health", methods=["GET"])
