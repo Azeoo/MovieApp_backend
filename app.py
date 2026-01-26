@@ -77,6 +77,7 @@ def login():
 
 # AI Movie Analyze API
 @app.route("/movie-ai-response", methods=["POST"])
+@jwt_required()
 def movie_description():
     logger.info("API '/movie-ai-response' called ...!!!")
     data = request.get_json()
