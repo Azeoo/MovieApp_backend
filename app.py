@@ -10,7 +10,10 @@ from datetime import timedelta, datetime, UTC
 from bson import ObjectId
 from logger import LoggerFactory
 from config import Config
-from llm_service import get_ai_movie_response
+from services.llm_service import get_ai_movie_response
+from services.email_service import send_otp_email
+import re
+import random
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -24,9 +27,17 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=2)
 # MongoDB Table Collection
 users_collection = mongo.db.users
 subscriptions_collection = mongo.db.subscriptions
+user_otp_collection = mongo.db.user_otp
 
 #Creating logger
 logger = LoggerFactory.get_logger(__name__)
+
+
+# Email pattern matching regex
+EMAIL_REGEX = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+
+def is_valid_email(email: str) -> bool:
+    return re.match(EMAIL_REGEX, email) is not None
 
 
 # User Register API
@@ -138,6 +149,143 @@ def get_user_dashboard():
             "success": False,
             "error": str(e)
         }), 500
+    
+
+#Route for sending OTP
+@app.route("/send-otp", methods=["POST"])
+@jwt_required()
+def send_otp():
+        logger.info("API '/send-otp' called ...!!!")
+        username = get_jwt_identity()
+
+        user = users_collection.find_one({"username": username})
+        if not user:
+            return jsonify({"msg": "User Not Found"}), 401
+
+        data = request.get_json()
+        email = data.get("email")
+
+        if not email:
+            return jsonify({
+                "success": False,
+                "message": "Email is required"
+            }), 400
+        
+        if not is_valid_email(email):
+            return jsonify({
+                "success": False,
+                "message": "Provide valid email address"
+            }), 400
+        
+        try:
+            # Generate 6-digit OTP
+            otp = str(random.randint(100000, 999999))
+            logger.info(f"OTP generated : {otp}")
+
+            user_otp_collection.update_one(
+                {"email": email, "username":username},
+                {
+                    "$set": {
+                        "otp": otp,
+                    },
+                    "$setOnInsert": {
+                        "email": email, "username":username
+                    }
+                },
+                upsert=True
+            )
+
+            if send_otp_email(email, otp):
+                return jsonify({
+                    "success": True,
+                    "message": "OTP sent successfully"
+                }), 200
+            
+            return jsonify({
+                "success": False,
+                "message": "Failed to send OTP"
+            }), 500
+
+        except Exception as e:
+            logger.exception(f"Exception occured while sending OTP :\n{e}")
+            return jsonify({
+                "success": False,
+                "message": "Failed to send OTP",
+            }), 500
+        
+
+#Route for verifying OTP
+@app.route("/verify-otp", methods=["POST"])
+@jwt_required()
+def verify_otp():
+        logger.info("API '/verify-otp' called ...!!!")
+        username = get_jwt_identity()
+
+        user = users_collection.find_one({"username": username})
+        if not user:
+            return jsonify({"msg": "User Not Found"}), 401
+
+        data = request.get_json()
+        email = data.get("email")
+        input_otp = str(data.get("otp"))
+
+        if not email:
+            return jsonify({
+                "success": False,
+                "message": "Email is required"
+            }), 400
+        
+        if not is_valid_email(email):
+            return jsonify({
+                "success": False,
+                "message": "Provide valid email address"
+            }), 400
+        
+
+        result = user_otp_collection.find_one({
+            "email": email,
+            "username": username
+        })
+
+        if result is None:
+            return jsonify({
+                "success":False,
+                "message":"Generate OTP first"
+            }), 500
+
+        otp_matches = input_otp == result["otp"]
+
+        if not otp_matches:
+            return jsonify({
+                "success": False,
+                "message": "Invalid OTP"
+            }), 500
+        
+
+        document = {
+            "username":username,
+            "score":0,
+            "watched_movies":[]
+        }
+
+        try:
+            subscriptions_collection.insert_one(document)
+            user_otp_collection.delete_one({
+                "email":email,
+                "username":username
+            })
+            return jsonify({
+                "success": True,
+                "message": "You're now Premium Member"
+            }), 201
+        except Exception as e:
+            logger.exception(f"Exception occured while adding account premium : {e}")
+            return jsonify({
+                "success": False,
+                "message": "Failed to add Membership details. Try again after sometime"
+            }), 500
+        
+
 
 
 @app.route("/health", methods=["GET"])
