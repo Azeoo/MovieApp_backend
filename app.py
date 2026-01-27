@@ -6,7 +6,8 @@ from flask_jwt_extended import (
 )
 from flask_cors import CORS
 import bcrypt
-from datetime import datetime, UTC
+from datetime import timedelta, datetime, UTC
+from bson import ObjectId
 from logger import LoggerFactory
 from config import Config
 from llm_service import get_ai_movie_response
@@ -17,8 +18,12 @@ app.config.from_object(Config)
 CORS(app)
 mongo = PyMongo(app)
 jwt = JWTManager(app)
+# set expiry
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=2)
 
+# MongoDB Table Collection
 users_collection = mongo.db.users
+subscriptions_collection = mongo.db.subscriptions
 
 #Creating logger
 logger = LoggerFactory.get_logger(__name__)
@@ -71,6 +76,7 @@ def login():
     access_token = create_access_token(identity=username)
 
     return jsonify({
+        "profile_name": user["name"],
         "access_token": access_token
     }), 200
 
@@ -89,6 +95,49 @@ def movie_description():
         return jsonify({"error": "movie_name and release_date are required"}), 400
 
     return get_ai_movie_response(movie_name=movie_name, release_date=release_date)
+
+
+#Get dashboard route
+@app.route("/subscriptions", methods=["GET"])
+@jwt_required()
+def get_user_dashboard():
+    logger.info("API '/subscriptions' called ...!!!")
+    try:
+        # Get user identity from JWT
+        username = get_jwt_identity()
+
+        logger.info(f"User : {username}")
+
+        subscription = None
+
+        # Fetch dashboard data for this user
+        try:
+            subscription = subscriptions_collection.find_one(
+                {"username": username},
+                {"_id": 0}  # exclude Mongo _id from response
+            )
+            logger.info(f"Subscription : {subscription}")
+        except Exception as e:
+            logger.error(f"Error : {e}")
+        finally:
+            logger.info(f"Finally block subscription : {subscription}")
+
+        if not subscription:
+            return jsonify({
+                "is_premium_member": False
+            }), 201
+
+        return jsonify({
+            "is_premium_member": True,
+            "score": subscription["score"],
+            "watched_movies":subscription["watched_movies"]
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 @app.route("/health", methods=["GET"])
