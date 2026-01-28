@@ -286,6 +286,57 @@ def verify_otp():
             }), 500
         
 
+#Route for watched movies
+@app.route("/watched", methods=["POST"])
+@jwt_required()
+def watched_movies_shows():
+
+    logger.info(f"API '/watched' called ...!!!")
+    username = get_jwt_identity()
+
+    data = request.get_json()
+    explore = data.get("explore")
+    explore_id = data.get("id")
+
+    if not explore or not explore_id:
+        return jsonify({
+            "success": False,
+            "message": "Provide Explorer and ID"
+        }), 500
+    
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    appended_object = {
+        "explore":explore,
+        "explore_id":explore_id,
+        "created_at":created_at
+    }
+
+    logger.info(f"Appended Object :\n{appended_object}")
+
+    try:
+        subscriptions_collection.update_one(
+            {"username":username},
+            {
+                "$addToSet": {
+                    "watched_movies": appended_object
+                }
+            }
+        )
+
+        return jsonify({
+            "success": True,
+            "message": "Added to watch history"
+        }), 201
+    except Exception as e:
+        logger.exception(f"Exception occured while adding watched movies details : {e}")
+        return jsonify({
+            "success": False,
+            "message": "Error occured while adding movie to watch history"
+        }), 500
+
+
+
 
 
 @app.route("/health", methods=["GET"])
