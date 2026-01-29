@@ -10,8 +10,9 @@ from datetime import timedelta, datetime, UTC
 from bson import ObjectId
 from logger import LoggerFactory
 from config import Config
-from services.llm_service import get_ai_movie_response
+from services.ai_movie_analyze_service import get_ai_movie_response
 from services.email_service import send_otp_email
+from services.quiz_service import generate_quiz_questions
 import re
 import random
 
@@ -459,6 +460,65 @@ def get_watch_together():
         }), 500
 
 
+# Route for updating Score
+@app.route("/update-score", methods=["POST"])
+@jwt_required()
+def update_user_score():
+    logger.info("API '/update-score' called ...!!!")
+
+    data = request.get_json()
+    logger.info(f"Data :\n{data}")
+    username = data.get("username")
+    score = data.get("score")
+
+    if not username:
+        return jsonify({
+            "success": False,
+            "message": "Username is required"
+        }), 400
+
+
+    records = subscriptions_collection.find_one({
+        "username": username
+    })
+
+    if not records:
+        return jsonify({
+            "success": False,
+            "message": "User not found"
+        }), 400
+    
+    logger.info(f"Username : {username} previous score : {records["score"]}")
+    updated_score = int(records["score"]) + int(score)
+    logger.info(f"Username : {username} updated score : {updated_score}")
+
+    try:
+        subscriptions_collection.update_one(
+                {"username":username},
+                {"$set": {"score":updated_score}}
+            )
+        logger.info(f"Score updated successfully")
+        return jsonify({
+            "success": True,
+            "message":"User score updated successfully"
+        }), 200
+    except Exception as e:
+        logger.exception(f"Error occured while updating the user movie points")
+        return jsonify({
+            "success": False,
+            "message" : "Failed to updated user score"
+        }), 500
+
+    
+
+# Route for play quiz
+@app.route("/quiz", methods=["GET"])
+@jwt_required()
+def generate_quiz():
+    logger.info(f"API '/quiz' called...!!!")
+
+    username = get_jwt_identity()
+    return generate_quiz_questions(username)
 
 
 @app.route("/health", methods=["GET"])
