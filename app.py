@@ -28,6 +28,7 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=2)
 users_collection = mongo.db.users
 subscriptions_collection = mongo.db.subscriptions
 user_otp_collection = mongo.db.user_otp
+group_watch_collection = mongo.db.group_watch
 
 #Creating logger
 logger = LoggerFactory.get_logger(__name__)
@@ -307,7 +308,7 @@ def watched_movies_shows():
     if not explore or not explore_id:
         return jsonify({
             "success": False,
-            "message": "Provide Explorer and ID"
+            "message": "Provide Media and Media ID"
         }), 500
     
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -341,6 +342,121 @@ def watched_movies_shows():
             "message": "Error occured while adding movie to watch history"
         }), 500
 
+
+
+#Route for watch together
+@app.route("/watch-together", methods=["POST"])
+@jwt_required()
+def watch_together():
+    logger.info("API '/watch-together' called ...!!!")
+    username = get_jwt_identity()
+
+    data = request.get_json()
+    explore = data.get("explore")
+    explore_id = data.get("id")
+
+    if not explore or not explore_id:
+        return jsonify({
+            "success": False,
+            "message": "Provide Media and Media ID"
+        }), 400
+
+    result = group_watch_collection.find_one({
+        "username": username,
+        "explore": explore,
+        "explore_id": explore_id
+    })
+
+    now = datetime.now()
+
+    if result:
+        added_at = datetime.strptime(result["added_at"], "%Y-%m-%d %H:%M:%S")
+        seven_days_ago = now - timedelta(days=7)
+
+        if added_at >= seven_days_ago:
+            return jsonify({
+                "success": False,
+                "message": "You already added this Media to Group Watch"
+            }), 409
+        else:
+            group_watch_collection.update_one(
+                {"_id": result["_id"]},
+                {"$set": {"added_at": now.strftime("%Y-%m-%d %H:%M:%S")}}
+            )
+
+            return jsonify({
+                "success": True,
+                "message": "Media again Added to Group Watch"
+            }), 201
+
+
+    document = {
+        "username": username,
+        "explore": explore,
+        "explore_id": explore_id,
+        "added_at": now.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    try:
+        group_watch_collection.insert_one(document)
+        return jsonify({
+            "success": True,
+            "message": "Media Added to Group Watch Successfully"
+        }), 201
+    except Exception:
+        logger.exception("Exception occurred while adding media to Group Watch")
+        return jsonify({
+            "success": False,
+            "message": "Failed to add Media to Group Watch"
+        }), 500
+
+    
+#Route for get watch together list
+@app.route("/watch-together-list", methods=["GET"])
+@jwt_required()
+def get_watch_together():
+    logger.info("API '/watch-together-list' called ...!!!")
+
+    try:
+        seven_days_ago = datetime.now() - timedelta(days=7)
+
+        # Fetch all records
+        records = group_watch_collection.find({})
+
+        user_map = {}
+
+        for doc in records:
+            try:
+                added_at = datetime.strptime(doc["added_at"], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue  # skip invalid dates
+
+            # Skip records older than 7 days
+            if added_at < seven_days_ago:
+                continue
+
+            username = doc["username"]
+
+            if username not in user_map:
+                user_map[username] = {
+                    "username": username,
+                    "user_movie_list": []
+                }
+
+            user_map[username]["user_movie_list"].append({
+                "explore": doc["explore"],
+                "explore_id": doc["explore_id"]
+            })
+
+        return jsonify({
+            "group_watch_list": list(user_map.values())
+        }), 200
+    except Exception as e:
+        logger.exception(f"Exception occured while creating group watch list")
+        return jsonify({
+            "success": False,
+            "message": "Failure occured while fetching data"
+        }), 500
 
 
 
