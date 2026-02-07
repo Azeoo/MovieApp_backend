@@ -6,7 +6,7 @@ from cryptography.fernet import Fernet
 load_dotenv()
 
 
-def _decrypt_if_needed(value: str | None) -> str | None:
+def _decrypt_(value: str | None) -> str | None:
     """
     Decrypts the value only if DECRYPTION_KEY exists.
     Allows plain-text fallback for local dev if needed.
@@ -28,9 +28,9 @@ def _decrypt_if_needed(value: str | None) -> str | None:
 
 
 class Config:
-    MONGO_URI = _decrypt_if_needed(os.getenv("MONGO_URI"))
-    JWT_SECRET_KEY = _decrypt_if_needed(os.getenv("JWT_SECRET_KEY"))
-    GOOGLE_API_KEY = _decrypt_if_needed(os.getenv("GOOGLE_API_KEY"))
-    CORS_ORIGIN = _decrypt_if_needed(os.getenv("CORS_ORIGIN"))
-    SENDER_EMAIL = _decrypt_if_needed(os.getenv("SENDER_EMAIL"))
-    APP_PASSWORD = _decrypt_if_needed(os.getenv("APP_PASSWORD"))
+    MONGO_URI = _decrypt_(os.getenv("MONGO_URI"))
+    JWT_SECRET_KEY = _decrypt_(os.getenv("JWT_SECRET_KEY"))
+    GOOGLE_API_KEY = _decrypt_(os.getenv("GOOGLE_API_KEY"))
+    CORS_ORIGIN = _decrypt_(os.getenv("CORS_ORIGIN"))
+    SENDER_EMAIL = _decrypt_(os.getenv("SENDER_EMAIL"))
+    APP_PASSWORD = _decrypt_(os.getenv("APP_PASSWORD"))
