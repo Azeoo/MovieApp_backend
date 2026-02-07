@@ -19,7 +19,7 @@ import random
 app = Flask(__name__)
 app.config.from_object(Config)
 
-CORS(app)
+CORS(app, origins=app.config["CORS_ORIGIN"])
 mongo = PyMongo(app)
 jwt = JWTManager(app)
 # set expiry
@@ -88,9 +88,21 @@ def login():
 
     access_token = create_access_token(identity=username)
 
+    subscription = subscriptions_collection.find_one(
+        {"username": username},
+        {"_id": 0}  # exclude Mongo _id from response
+    )
+
+    premium_member = False
+
+    if subscription is not None:
+        premium_member = True
+        
+
     return jsonify({
         "profile_name": user["name"],
-        "access_token": access_token
+        "access_token": access_token,
+        "premium_member":premium_member
     }), 200
 
 
@@ -119,7 +131,7 @@ def get_user_dashboard():
         # Get user identity from JWT
         username = get_jwt_identity()
 
-        logger.info(f"User : {username}")
+        # logger.info(f"User : {username}")
 
         subscription = None
 
@@ -129,7 +141,7 @@ def get_user_dashboard():
                 {"username": username},
                 {"_id": 0}  # exclude Mongo _id from response
             )
-            logger.info(f"Subscription Details : {subscription}")
+            # logger.info(f"Subscription Details : {subscription}")
         except Exception as e:
             logger.error(f"Error : {e}")
 
@@ -188,7 +200,7 @@ def send_otp():
         try:
             # Generate 6-digit OTP
             otp = str(random.randint(100000, 999999))
-            logger.info(f"OTP generated : {otp}")
+            # logger.info(f"OTP generated : {otp}")
 
             user_otp_collection.update_one(
                 {"email": email, "username":username},
@@ -320,7 +332,7 @@ def watched_movies_shows():
         "created_at":created_at
     }
 
-    logger.info(f"Appended Object :\n{appended_object}")
+    # logger.info(f"Appended Object :\n{appended_object}")
 
     try:
         subscriptions_collection.update_one(
@@ -377,7 +389,7 @@ def watch_together():
         if added_at >= seven_days_ago:
             return jsonify({
                 "success": False,
-                "message": "You already added this Media to Group Watch"
+                "message": "Already added to Group Watch"
             }), 409
         else:
             group_watch_collection.update_one(
@@ -387,7 +399,7 @@ def watch_together():
 
             return jsonify({
                 "success": True,
-                "message": "Media again Added to Group Watch"
+                "message": "Added to Group Watch"
             }), 201
 
 
@@ -402,13 +414,13 @@ def watch_together():
         group_watch_collection.insert_one(document)
         return jsonify({
             "success": True,
-            "message": "Media Added to Group Watch Successfully"
+            "message": "Added to Group Watch"
         }), 201
     except Exception:
         logger.exception("Exception occurred while adding media to Group Watch")
         return jsonify({
             "success": False,
-            "message": "Failed to add Media to Group Watch"
+            "message": "Failed to add"
         }), 500
 
     
@@ -467,7 +479,7 @@ def update_user_score():
     logger.info("API '/update-score' called ...!!!")
 
     data = request.get_json()
-    logger.info(f"Data :\n{data}")
+    # logger.info(f"Data :\n{data}")
     username = data.get("username")
     score = data.get("score")
 
@@ -488,9 +500,9 @@ def update_user_score():
             "message": "User not found"
         }), 400
     
-    logger.info(f"Username : {username} previous score : {records["score"]}")
+    # logger.info(f"Username : {username} previous score : {records["score"]}")
     updated_score = int(records["score"]) + int(score)
-    logger.info(f"Username : {username} updated score : {updated_score}")
+    # logger.info(f"Username : {username} updated score : {updated_score}")
 
     try:
         subscriptions_collection.update_one(

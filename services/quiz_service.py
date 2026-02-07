@@ -66,14 +66,12 @@ def generate_quiz_questions(username:str):
         logger.info(f"In try block...!!!")
         result = chain.invoke({})
 
-        logger.info(f"result type : {type(result)}")
-        logger.info(f"Raw Response :\n{result}")
-
+        # logger.info(f"result type : {type(result)}")
+        # logger.info(f"Raw Response :\n{result}")
         
         data = extract_json(result)
-        logger.info(f"Type of data : {type(data)}")
-
-        logger.info(f"Data :\n{data}")
+        # logger.info(f"Type of data : {type(data)}")
+        # logger.info(f"Data :\n{data}")
 
         return jsonify({
             "username":username,
