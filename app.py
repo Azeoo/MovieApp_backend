@@ -6,6 +6,7 @@ from flask_jwt_extended import (
 )
 from flask_cors import CORS
 import bcrypt
+import os
 from datetime import timedelta, datetime, UTC
 from logger import LoggerFactory
 from config import Config
@@ -548,4 +549,8 @@ def health():
 
 if __name__ == "__main__":
     logger.info("Starting Flask Application")
-    app.run(debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
+    )
