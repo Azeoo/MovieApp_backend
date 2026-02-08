@@ -7,7 +7,6 @@ from flask_jwt_extended import (
 from flask_cors import CORS
 import bcrypt
 from datetime import timedelta, datetime, UTC
-from bson import ObjectId
 from logger import LoggerFactory
 from config import Config
 from services.ai_movie_analyze_service import get_ai_movie_response
@@ -61,7 +60,7 @@ def register():
 
     users_collection.insert_one({
         "name": name,
-        "username": username,
+        "username": username.lower(),
         "password": hashed_pw
     })
 
@@ -431,10 +430,14 @@ def get_watch_together():
     logger.info("API '/watch-together-list' called ...!!!")
 
     try:
+
+        username = get_jwt_identity()
         seven_days_ago = datetime.now() - timedelta(days=7)
 
         # Fetch all records
-        records = group_watch_collection.find({})
+        records = group_watch_collection.find({
+            "username": {"$ne": username}
+        })
 
         user_map = {}
 
