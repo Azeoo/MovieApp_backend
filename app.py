@@ -19,7 +19,10 @@ import random
 app = Flask(__name__)
 app.config.from_object(Config)
 
-CORS(app, origins=app.config["CORS_ORIGIN"])
+CORS(app)
+
+# print(app.config["CORS_ORIGIN"])
+# print(type(app.config["CORS_ORIGIN"]))
 mongo = PyMongo(app)
 jwt = JWTManager(app)
 # set expiry
@@ -30,6 +33,7 @@ users_collection = mongo.db.users
 subscriptions_collection = mongo.db.subscriptions
 user_otp_collection = mongo.db.user_otp
 group_watch_collection = mongo.db.group_watch
+user_watched_movie_collection = mongo.db.user_watched_movies
 
 #Creating logger
 logger = LoggerFactory.get_logger(__name__)
@@ -62,7 +66,8 @@ def register():
     users_collection.insert_one({
         "name": name,
         "username": username.lower(),
-        "password": hashed_pw
+        "password": hashed_pw,
+        "login_data":[]
     })
 
     return jsonify({"msg": "User registered successfully"}), 201
@@ -78,6 +83,8 @@ def login():
 
     if not username or not password:
         return jsonify({"msg": "All fields are required"}), 400
+    
+    username = username.lower()
 
     user = users_collection.find_one({"username": username})
     if not user:
@@ -98,6 +105,14 @@ def login():
     if subscription is not None:
         premium_member = True
         
+    users_collection.update_one(
+        {"username": username},
+        {
+            "$push": {
+                "login_data": datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+            }
+        }
+    )
 
     return jsonify({
         "profile_name": user["name"],
@@ -535,6 +550,41 @@ def generate_quiz():
 
     username = get_jwt_identity()
     return generate_quiz_questions(username)
+
+# Route for user watch activity
+@app.route("/watch-progress", methods=["POST"])
+@jwt_required()
+def save_watch_progress():
+    try:
+        data = request.get_json()
+
+        username = get_jwt_identity()
+        explore = data.get("explore")
+        explore_id = data.get("id")
+        watched_seconds = data.get("watchedSeconds", 0)
+        total_duration = data.get("totalDuration", 0)
+        completion_rate = data.get("completionRate", 0)
+
+        if not explore or not explore_id:
+            return jsonify({"error": "Missing Data"}), 400
+
+        # Update if record exists (prevents duplicates)
+        user_watched_movie_collection.insert_one(
+            {
+                "username": username,
+                "explore": explore,
+                "explore_id": explore_id,
+                "watched_seconds": watched_seconds,
+                "total_duration": total_duration,
+                "completion_rate": completion_rate,
+                "watched_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+            }
+        )
+
+        return jsonify({"message": "Watch progress saved successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
