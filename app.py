@@ -67,7 +67,8 @@ def register():
         "name": name,
         "username": username.lower(),
         "password": hashed_pw,
-        "login_data":[]
+        "login_data":[],
+        "watched_data":[]
     })
 
     return jsonify({"msg": "User registered successfully"}), 201
@@ -173,10 +174,22 @@ def get_user_dashboard():
             reverse=True
         )[:5]
 
+
+        user = users_collection.find_one(
+            {"username": username},
+            {"_id": 0, "watched_data": 1}   # projection (only return watched_data)
+        )
+
+        logger.info(f"User Watched movie data :\n{user}")
+
+
+
+
         return jsonify({
             "is_premium_member": True,
             "score": subscription["score"],
-            "watched_movies":latest_five
+            "watched_movies":latest_five,
+            "heatmap_data": user["watched_data"]
         }), 200
 
     except Exception as e:
@@ -333,13 +346,78 @@ def watched_movies_shows():
     explore = data.get("explore")
     explore_id = data.get("id")
 
-    if not explore or not explore_id:
+    if not explore or not explore_id or not username:
         return jsonify({
             "success": False,
-            "message": "Provide Media and Media ID"
+            "message": "Data not found"
         }), 500
     
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d-%m-%Y")
+
+    user = users_collection.find_one({"username": username})
+
+    if not user:
+        logger.info("User data not found in database")
+        
+
+    watched_data = user.get("watched_data", [])
+
+    # 🔎 Check if today's date already exists
+    today_entry = next((item for item in watched_data if item["date"] == today), None)
+
+    if today_entry:
+        # ✅ Increase frequency only
+        users_collection.update_one(
+            {
+                "username": username,
+                "watched_data.date": today
+            },
+            {
+                "$inc": {"watched_data.$.frequency": 1}
+            }
+        )
+        logger.info("Today's frequency incremented")
+
+    else:
+        # ❌ Today's entry not present → Add new entry
+        users_collection.update_one(
+            {"username": username},
+            {
+                "$push": {
+                    "watched_data": {
+                        "date": today,
+                        "frequency": 1
+                    }
+                }
+            }
+        )
+
+        # 🔥 Streak Logic (ONLY when new day entry)
+        yesterday_present = any(item["date"] == yesterday for item in watched_data)
+
+        if yesterday_present:
+            movie_count = user.get("movie_count", 0) + 1
+        else:
+            movie_count = 1
+
+        max_streak = user.get("max_streak", 0)
+
+        if movie_count > max_streak:
+            max_streak = movie_count
+
+        users_collection.update_one(
+            {"username": username},
+            {
+                "$set": {
+                    "movie_count": movie_count,
+                    "max_streak": max_streak
+                }
+            }
+        )
+
+        logger.info("New day added + streak updated")
 
     appended_object = {
         "explore":explore,
@@ -556,6 +634,7 @@ def generate_quiz():
 @jwt_required()
 def save_watch_progress():
     try:
+        logger.info(f"API '/watch-progress' called...!!!")
         data = request.get_json()
 
         username = get_jwt_identity()
@@ -602,5 +681,6 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
-        debug=False
+        debug=True,
+        
     )
