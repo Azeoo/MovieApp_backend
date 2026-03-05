@@ -182,6 +182,56 @@ def get_user_dashboard():
 
         logger.info(f"User Watched movie data :\n{user}")
 
+        three_months_ago = datetime.utcnow() - timedelta(days=90)
+
+        pipeline = [
+            {
+                "$match": {
+                    "username": username
+                }
+            },
+            {
+                "$addFields": {
+                    "watched_at_date": {
+                        "$dateFromString": {
+                            "dateString": "$watched_at",
+                            "format": "%d-%m-%Y %H:%M:%S"
+                        }
+                    }
+                }
+            },
+            {
+                "$match": {
+                    "watched_at_date": {"$gte": three_months_ago}
+                }
+            },
+            {
+                "$sort": {"completion_rate": -1}
+            },
+            {
+                "$group": {
+                    "_id": "$username",
+                    "explores": {
+                        "$push": {
+                            "explore": "$explore",
+                            "explore_id": "$explore_id"
+                        }
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "username": "$_id",
+                    "top_explores": {"$slice": ["$explores", 3]}
+                }
+            }
+        ]
+
+        result = list(user_watched_movie_collection.aggregate(pipeline))
+        logger.info(f"Response result for recommendation :\n{result}")
+        logger.info(f"Top 3 completed movies explore and id {result[0]["top_explores"]}")
+
 
 
 
@@ -189,7 +239,8 @@ def get_user_dashboard():
             "is_premium_member": True,
             "score": subscription["score"],
             "watched_movies":latest_five,
-            "heatmap_data": user["watched_data"]
+            "heatmap_data": user["watched_data"],
+            "recommendation":result[0]["top_explores"]
         }), 200
 
     except Exception as e:
@@ -419,34 +470,47 @@ def watched_movies_shows():
 
         logger.info("New day added + streak updated")
 
-    appended_object = {
-        "explore":explore,
-        "explore_id":explore_id,
-        "created_at":created_at
-    }
-
-    # logger.info(f"Appended Object :\n{appended_object}")
-
-    try:
-        subscriptions_collection.update_one(
-            {"username":username},
-            {
-                "$addToSet": {
-                    "watched_movies": appended_object
+        try:
+            result = subscriptions_collection.update_one(
+                {
+                    "username": username,
+                    "watched_movies.explore": explore,
+                    "watched_movies.explore_id": explore_id
+                },
+                {
+                    "$set": {
+                        "watched_movies.$.created_at": created_at
+                    }
                 }
-            }
-        )
+            )
 
-        return jsonify({
-            "success": True,
-            "message": "Added to watch history"
-        }), 201
-    except Exception as e:
-        logger.exception(f"Exception occured while adding watched movies details : {e}")
-        return jsonify({
-            "success": False,
-            "message": "Error occured while adding movie to watch history"
-        }), 500
+            if result.matched_count == 0:
+                appended_object = {
+                    "explore": explore,
+                    "explore_id": explore_id,
+                    "created_at": created_at
+                }
+
+                subscriptions_collection.update_one(
+                    {"username": username},
+                    {
+                        "$push": {
+                            "watched_movies": appended_object
+                        }
+                    }
+                )
+
+            return jsonify({
+                "success": True,
+                "message": "Watch history updated"
+            }), 201
+
+        except Exception as e:
+            logger.exception(f"Exception occured while adding watched movies details : {e}")
+            return jsonify({
+                "success": False,
+                "message": "Error occured while adding movie to watch history"
+            }), 500
 
 
 
