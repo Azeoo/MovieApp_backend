@@ -13,8 +13,13 @@ from config import Config
 from services.ai_movie_analyze_service import get_ai_movie_response
 from services.email_service import send_otp_email
 from services.quiz_service import generate_quiz_questions
+from services.predict_churn_service import predict_churn
+from services.chatbot_service import chatbot
 import re
+import string
 import random
+from flask_socketio import SocketIO, emit, join_room, leave_room
+
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -28,15 +33,55 @@ jwt = JWTManager(app)
 # set expiry
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=2)
 
+
+# -----------------------------------------------------------
+# 1. Initialize SocketIO on your existing Flask app
+#    (replace your current app.run with socketio.run)
+# -----------------------------------------------------------
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",   # tighten this to your frontend URL in production
+    async_mode="eventlet"
+)
+
 # MongoDB Table Collection
 users_collection = mongo.db.users
 subscriptions_collection = mongo.db.subscriptions
 user_otp_collection = mongo.db.user_otp
 group_watch_collection = mongo.db.group_watch
 user_watched_movie_collection = mongo.db.user_watched_movies
+watch_parties_collection = mongo.db.watch_parties
 
 #Creating logger
 logger = LoggerFactory.get_logger(__name__)
+
+
+# ADD this dict after your collections
+socket_room_map = {}  # tracks sid -> {room, username}
+
+
+# ── Helper: generate short unique code like "XR7T9" ─────────────
+def generate_room_code(length=6):
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = "".join(random.choices(chars, k=length))
+        # ensure uniqueness in DB
+        if not watch_parties_collection.find_one({"code": code}):
+            return code
+
+# ADD after: logger = LoggerFactory.get_logger(__name__)
+def get_user_from_token(token):
+    try:
+        # flask-jwt-extended stores identity in "sub" claim
+        payload = JWTManager._decode_jwt_from_config  # not used — decode manually
+        import base64, json
+        parts = token.split(".")
+        padded = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(padded))
+        username = decoded.get("sub") or "User"
+        return {"username": username, "avatar": username[0].upper()}
+    except Exception:
+        return {"username": "Guest", "avatar": "G"}
 
 
 # Email pattern matching regex
@@ -68,7 +113,11 @@ def register():
         "username": username.lower(),
         "password": hashed_pw,
         "login_data":[],
-        "watched_data":[]
+        "watched_data":[],
+        "taken_subscription":False,
+        "subscription_valid":"",
+        "max_streak":0,
+        "movie_count":0
     })
 
     return jsonify({"msg": "User registered successfully"}), 201
@@ -106,6 +155,37 @@ def login():
     if subscription is not None:
         premium_member = True
         
+
+    churn_detected = False
+    redirect_to = True
+    if user['taken_subscription'] == True:
+        logger.info("inside prediction")
+        login_doc = users_collection.find_one({"username": username})
+        watch_docs = list(user_watched_movie_collection.find({"username": username}))
+        result = predict_churn(username, login_doc, watch_docs)
+        churn_detected = bool(result['churn_prediction'])
+
+        logger.info(f"In App.py Predict churn result :\n{result}")
+
+        subscription_valid = user["subscription_valid"]  # from MongoDB
+
+        # convert string to date
+        valid_date = datetime.strptime(subscription_valid, "%Y-%m-%d").date()
+        today = datetime.today().date()
+
+        
+
+        if today > (valid_date - timedelta(days=3)):
+            logger.info("true")
+            redirect_to = True
+        else:
+            logger.info("false")
+            redirect_to = False
+
+        logger.info(redirect_to)
+
+
+
     users_collection.update_one(
         {"username": username},
         {
@@ -115,10 +195,14 @@ def login():
         }
     )
 
+
+
     return jsonify({
         "profile_name": user["name"],
         "access_token": access_token,
-        "premium_member":premium_member
+        "premium_member":premium_member,
+        "churn_detected": churn_detected,
+        "redirect_to":redirect_to
     }), 200
 
 
@@ -177,8 +261,10 @@ def get_user_dashboard():
 
         user = users_collection.find_one(
             {"username": username},
-            {"_id": 0, "watched_data": 1}   # projection (only return watched_data)
+            {"_id": 0, "watched_data": 1, "max_streak":1}   # projection (only return watched_data)
         )
+
+        logger.info(f"User :\n{user}")
 
         logger.info(f"User Watched movie data :\n{user}")
 
@@ -230,17 +316,30 @@ def get_user_dashboard():
 
         result = list(user_watched_movie_collection.aggregate(pipeline))
         logger.info(f"Response result for recommendation :\n{result}")
-        logger.info(f"Top 3 completed movies explore and id {result[0]["top_explores"]}")
+        top_explores=[]
+        top_explores = result[0].get("top_explores") if result and len(result) > 0 else None
+        if top_explores:
+            logger.info(f"Top 3 completed movies explore and id {top_explores}")
 
 
+        temp = {
+            "is_premium_member": True,
+            "score": subscription["score"],
+            "watched_movies":latest_five,
+            "heatmap_data": user["watched_data"],
+            "recommendation":top_explores,
+            "max_streak":user['max_streak']
+        }
 
+        logger.info(f"Result in subscription  :\n{temp}")
 
         return jsonify({
             "is_premium_member": True,
             "score": subscription["score"],
             "watched_movies":latest_five,
             "heatmap_data": user["watched_data"],
-            "recommendation":result[0]["top_explores"]
+            "recommendation":top_explores,
+            "max_streak":user['max_streak']
         }), 200
 
     except Exception as e:
@@ -405,7 +504,7 @@ def watched_movies_shows():
     
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today = datetime.now().strftime("%Y-%m-%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d-%m-%Y")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     user = users_collection.find_one({"username": username})
 
@@ -470,47 +569,47 @@ def watched_movies_shows():
 
         logger.info("New day added + streak updated")
 
-        try:
-            result = subscriptions_collection.update_one(
+    try:
+        result = subscriptions_collection.update_one(
+            {
+                "username": username,
+                "watched_movies.explore": explore,
+                "watched_movies.explore_id": explore_id
+            },
+            {
+                "$set": {
+                    "watched_movies.$.created_at": created_at
+                }
+            }
+        )
+
+        if result.matched_count == 0:
+            appended_object = {
+                "explore": explore,
+                "explore_id": explore_id,
+                "created_at": created_at
+            }
+
+            subscriptions_collection.update_one(
+                {"username": username},
                 {
-                    "username": username,
-                    "watched_movies.explore": explore,
-                    "watched_movies.explore_id": explore_id
-                },
-                {
-                    "$set": {
-                        "watched_movies.$.created_at": created_at
+                    "$push": {
+                        "watched_movies": appended_object
                     }
                 }
             )
 
-            if result.matched_count == 0:
-                appended_object = {
-                    "explore": explore,
-                    "explore_id": explore_id,
-                    "created_at": created_at
-                }
+        return jsonify({
+            "success": True,
+            "message": "Watch history updated"
+        }), 201
 
-                subscriptions_collection.update_one(
-                    {"username": username},
-                    {
-                        "$push": {
-                            "watched_movies": appended_object
-                        }
-                    }
-                )
-
-            return jsonify({
-                "success": True,
-                "message": "Watch history updated"
-            }), 201
-
-        except Exception as e:
-            logger.exception(f"Exception occured while adding watched movies details : {e}")
-            return jsonify({
-                "success": False,
-                "message": "Error occured while adding movie to watch history"
-            }), 500
+    except Exception as e:
+        logger.exception(f"Exception occured while adding watched movies details : {e}")
+        return jsonify({
+            "success": False,
+            "message": "Error occured while adding movie to watch history"
+        }), 500
 
 
 
@@ -546,7 +645,7 @@ def watch_together():
         if added_at >= seven_days_ago:
             return jsonify({
                 "success": False,
-                "message": "Already added to Group Watch"
+                "message": "Already added to Spotlight"
             }), 409
         else:
             group_watch_collection.update_one(
@@ -556,7 +655,7 @@ def watch_together():
 
             return jsonify({
                 "success": True,
-                "message": "Added to Group Watch"
+                "message": "Added to Spotlight"
             }), 201
 
 
@@ -571,7 +670,7 @@ def watch_together():
         group_watch_collection.insert_one(document)
         return jsonify({
             "success": True,
-            "message": "Added to Group Watch"
+            "message": "Added to Spotlight"
         }), 201
     except Exception:
         logger.exception("Exception occurred while adding media to Group Watch")
@@ -730,6 +829,309 @@ def save_watch_progress():
         return jsonify({"error": str(e)}), 500
 
 
+# payment route
+@app.route('/payment', methods=['POST'])
+@jwt_required()
+def payment():
+    data = request.get_json()
+
+    logger.info("API /payment called...!!!")
+
+    username = get_jwt_identity()
+    duration = int(data.get("duration_of_subscription"))
+
+    user = users_collection.find_one({"username": username})
+
+    try:
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        taken_subscription = user.get("taken_subscription")
+        subscription_valid = user.get("subscription_valid")
+
+        # convert string date to datetime
+        if subscription_valid:
+            sub_date = datetime.strptime(subscription_valid, "%Y-%m-%d")
+        else:
+            sub_date = datetime.today()
+
+        # check subscription
+        if taken_subscription == "true" or taken_subscription is True:
+            new_valid_date = sub_date + timedelta(days=duration)
+        else:
+            new_valid_date = datetime.today() + timedelta(days=duration)
+
+        new_valid_date_str = new_valid_date.strftime("%Y-%m-%d")
+
+        logger.info("updating user to premium")
+        users_collection.update_one(
+            {"username": username},
+            {
+                "$set": {
+                    "subscription_valid": new_valid_date_str,
+                    "taken_subscription": True
+                }
+            }
+        )
+        logger.info("updated user to premium")
+
+        document = {
+            "username": username,
+            "score": 0,
+            "watched_movies": []
+        }
+
+        existing_user = subscriptions_collection.find_one({"username": username})
+
+        if not existing_user:
+            subscriptions_collection.insert_one(document)
+
+        return jsonify({
+            "success": True,
+            "message":"Subscription Extended"
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message":"Failed to extend subscription"
+        }), 400
+    
+
+
+# chatbot route
+@app.route('/chat-bot', methods=['POST'])
+@jwt_required()
+def chatbot_method():
+    logger.info("API /chatbot called...!!!")
+
+    data = request.get_json()
+    if not data:
+        logger.warning("Empty request body received")
+        return jsonify({
+            "success": False,
+            "message": "Request body is empty"
+        }), 400
+
+    query = data.get("query")
+    if not query or not isinstance(query, str) or query.strip() == "":
+        logger.warning("Invalid query received: %s", query)
+        return jsonify({
+            "success": False,
+            "message": "Query not found or invalid"
+        }), 400
+
+    logger.info("Processing chatbot query: %s", query)
+    return chatbot(query)
+
+
+
+
+
+# -----------------------------------------------------------
+# 3. Join a movie room
+#    Frontend emits: { room: "movie-278", token: "..." }
+# -----------------------------------------------------------
+# UPDATE your existing on_join to also store sid mapping:
+@socketio.on("join")
+def on_join(data):
+    token = data.get("token", "")
+    room  = data.get("room", "")
+    user  = get_user_from_token(token)
+
+    if not room:
+        return
+
+    join_room(room)
+    socket_room_map[request.sid] = {"room": room, "username": user["username"]}  # ADD this line
+
+    emit("system_message", {
+        "message": f"{user['username']} joined the chat",
+    }, to=room)
+
+
+# ADD after the on_join function
+@socketio.on("send_message")
+def handle_message(data):
+    token   = data.get("token", "")
+    room    = data.get("room", "")
+    message = data.get("message", "").strip()
+    user    = get_user_from_token(token)
+
+    if not room or not message:
+        return
+
+    timestamp = datetime.now().strftime("%I:%M %p")
+
+    emit("receive_message", {
+        "user":      user["username"],
+        "avatar":    user["avatar"],
+        "message":   message,
+        "timestamp": timestamp,
+    }, to=room)
+
+
+# ADD this new handler anywhere after on_join:
+@socketio.on("disconnect")
+def on_disconnect():
+    sid = request.sid
+    info = socket_room_map.pop(sid, None)  # remove from map
+    if info:
+        emit("system_message", {
+            "message": f"{info['username']} left the room",
+        }, to=info["room"])
+    logger.info(f"Client disconnected: {sid}")
+
+
+
+# ADD after on_disconnect:
+@socketio.on("leave")
+def on_leave(data):
+    token = data.get("token", "")
+    room  = data.get("room", "")
+    user  = get_user_from_token(token)
+
+    if not room:
+        return
+
+    leave_room(room)
+    socket_room_map.pop(request.sid, None)
+
+    emit("system_message", {
+        "message": f"{user['username']} left the room",
+    }, to=room)
+
+
+
+
+
+
+# ================================================================
+# ROUTE 1 — Create a watch party
+# POST /create-watch-party
+# Body: { "movie_id": 278, "media_type": "movie" }
+# Only premium members can create
+# ================================================================
+@app.route("/create-watch-party", methods=["POST"])
+@jwt_required()
+def create_watch_party():
+    logger.info("API '/create-watch-party' called...!!!")
+    try:
+        username = get_jwt_identity()
+
+        # ── Premium check ────────────────────────────────────────
+        subscription = subscriptions_collection.find_one({"username": username})
+        if not subscription:
+            return jsonify({
+                "success": False,
+                "message": "Only premium members can start a watch party"
+            }), 403
+
+        data       = request.get_json()
+        movie_id   = data.get("movie_id")
+        media_type = data.get("media_type", "movie")
+
+        if not movie_id:
+            return jsonify({"success": False, "message": "movie_id is required"}), 400
+
+        code = generate_room_code()
+
+        watch_parties_collection.insert_one({
+            "code":       code,
+            "movie_id":   movie_id,
+            "media_type": media_type,
+            "host":       username,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "active":     True
+        })
+
+        logger.info(f"Watch party created: code={code} movie_id={movie_id} host={username}")
+
+        return jsonify({
+            "success": True,
+            "code":    code,
+            "link":    f"/live-watch/{code}"
+        }), 201
+
+    except Exception as e:
+        logger.exception("Error creating watch party")
+        return jsonify({"success": False, "message": str(e)}), 500
+    
+
+
+# ================================================================
+# ROUTE 2 — Join / fetch watch party info
+# GET /watch-party/<code>
+# Returns movie_id + media_type so frontend can load the video
+# Only logged-in (JWT) users can join
+# ================================================================
+@app.route("/watch-party/<code>", methods=["GET"])
+@jwt_required()
+def get_watch_party(code):
+    logger.info(f"API '/watch-party/{code}' called...!!!")
+    try:
+        username = get_jwt_identity()
+
+        # ── Premium check ────────────────────────────────────────
+        subscription = subscriptions_collection.find_one({"username": username})
+        if not subscription:
+            return jsonify({
+                "success": False,
+                "message": "Only premium members can join a watch party"
+            }), 403
+
+        party = watch_parties_collection.find_one({"code": code}, {"_id": 0})
+
+        if not party:
+            return jsonify({"success": False, "message": "Watch party not found"}), 404
+
+        if not party.get("active", True):
+            return jsonify({"success": False, "message": "This watch party has ended"}), 410
+
+        return jsonify({
+            "success":    True,
+            "code":       party["code"],
+            "movie_id":   party["movie_id"],
+            "media_type": party["media_type"],
+            "host":       party["host"],
+        }), 200
+
+    except Exception as e:
+        logger.exception("Error fetching watch party")
+        return jsonify({"success": False, "message": str(e)}), 500
+    
+
+
+
+# ================================================================
+# SOCKET EVENT — Host ends the party
+# Frontend emits: { code: "XR7T9", token: "..." }
+# Broadcasts "party_ended" to everyone in the room
+# Marks party as inactive in MongoDB
+# ================================================================
+@socketio.on("end_party")
+def on_end_party(data):
+    token = data.get("token", "")
+    code  = data.get("code", "")
+    user  = get_user_from_token(token)
+
+    if not code:
+        return
+
+    # Mark as inactive in DB
+    watch_parties_collection.update_one(
+        {"code": code},
+        {"$set": {"active": False, "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}}
+    )
+
+    logger.info(f"Watch party ended: code={code} by host={user['username']}")
+
+    # Notify everyone in the room
+    emit("party_ended", {
+        "message": f"{user['username']} has ended the session"
+    }, to=code)
+
+
+
 @app.route("/health", methods=["GET"])
 def health():
     logger.info("Health checked...!!!")
@@ -740,11 +1142,22 @@ def health():
     })
 
 
+# if __name__ == "__main__":
+#     logger.info("Starting Flask Application")
+#     app.run(
+#         host="0.0.0.0",
+#         port=int(os.environ.get("PORT", 5000)),
+#         debug=True,
+        
+#     )
+
+
+# WITH this:
 if __name__ == "__main__":
     logger.info("Starting Flask Application")
-    app.run(
+    socketio.run(
+        app,
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
         debug=True,
-        
     )

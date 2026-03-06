@@ -4,11 +4,16 @@ import joblib
 import numpy as np
 import os
 
+from logger import LoggerFactory
+
+
+logger = LoggerFactory.get_logger(__name__)
+
 
 # -------------------------------
 # Load Model
 # -------------------------------
-model = joblib.load(os.path.join("model", "random_forest_churn_model.pkl"))
+model = joblib.load(os.path.join("model", "xgb_churn_model.pkl"))
 
 # -------------------------------
 # MongoDB Connection
@@ -29,9 +34,11 @@ def parse_date(date_string):
 # -------------------------------
 # Predict Churn Function
 # -------------------------------
-def predict_churn(username='raj'):
+def predict_churn(username, login_doc, watch_docs):
 
-    print("churn prediction started")
+    logger.info("churn prediction started")
+
+    logger.info(f"User : {username}")
     now = datetime.now()
     five_days_ago = now - timedelta(days=5)
 
@@ -41,7 +48,7 @@ def predict_churn(username='raj'):
     login_doc = login_collection.find_one({"username": username})
 
     if not login_doc or "login_data" not in login_doc:
-        print("No login data found")
+        logger.info("No login data found")
 
     login_dates = [parse_date(d) for d in login_doc["login_data"]]
     login_dates.sort()
@@ -107,7 +114,9 @@ def predict_churn(username='raj'):
         "meaning": "User likely to churn" if prediction == 1 else "User likely to stay"
     }
 
-    print(result)
+    logger.info(result)
+
+    return result
 
 
-predict_churn()
+# predict_churn()
